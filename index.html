@@ -385,14 +385,21 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
         <label class="field-label">날짜</label>
         <input type="date" id="fDateExchange">
       </div>
+      <div class="field" id="exchangeDirectionField">
+        <label class="field-label">환전</label>
+        <div class="country-toggle direction-toggle">
+          <button type="button" data-direction="won-to-yen" class="active">원(₩) → 엔(¥)</button>
+          <button type="button" data-direction="yen-to-won">엔(¥) → 원(₩)</button>
+        </div>
+      </div>
       <div class="field-row">
         <div class="field">
-          <label class="field-label">지급한 원화 (원)</label>
+          <label class="field-label" id="fWonGivenLabel">지급한 원화 (원)</label>
           <input type="number" id="fWonGiven" min="1" placeholder="0">
         </div>
         <div class="exchange-arrow">⇄</div>
         <div class="field">
-          <label class="field-label">받은 엔화 (엔)</label>
+          <label class="field-label" id="fYenReceivedLabel">받은 엔화 (엔)</label>
           <input type="number" id="fYenReceived" min="1" placeholder="0">
         </div>
       </div>
@@ -708,7 +715,11 @@ function render() {
             <div class="title">환전</div>
             <div class="sub">${t.date}${memoPart}</div>
           </div>
-          <div class="amount exchange row-edit-target" data-edit-id="${t.id}">${formatAmount(t.wonGiven,"원")} → ${formatAmount(t.yenReceived,"엔")}</div>
+          <div class="amount exchange row-edit-target" data-edit-id="${t.id}">${
+            t.wonGiven < 0
+              ? `${formatAmount(Math.abs(t.yenReceived),"엔")} → ${formatAmount(Math.abs(t.wonGiven),"원")}`
+              : `${formatAmount(t.wonGiven,"원")} → ${formatAmount(t.yenReceived,"엔")}`
+          }</div>
           <button class="del" data-id="${t.id}" aria-label="삭제">🗑</button>
         </div>`;
     }
@@ -810,13 +821,31 @@ document.getElementById("photoOverlay").addEventListener("click", (e) => {
 
 function setCountry(c) {
   currentCountry = c;
-  document.querySelectorAll(".country-toggle button").forEach(b => {
+  document.querySelectorAll(".country-toggle:not(.direction-toggle) button").forEach(b => {
     b.classList.toggle("active", b.getAttribute("data-country") === c);
   });
   document.getElementById("amountLabel").textContent = `금액 (${COUNTRIES[c].currency})`;
 }
-document.querySelectorAll(".country-toggle button").forEach(b => {
+document.querySelectorAll(".country-toggle:not(.direction-toggle) button").forEach(b => {
   b.addEventListener("click", () => setCountry(b.getAttribute("data-country")));
+});
+
+let currentExchangeDirection = "won-to-yen"; // or "yen-to-won"
+function setExchangeDirection(dir) {
+  currentExchangeDirection = dir;
+  document.querySelectorAll(".direction-toggle button").forEach(b => {
+    b.classList.toggle("active", b.getAttribute("data-direction") === dir);
+  });
+  if (dir === "won-to-yen") {
+    document.getElementById("fWonGivenLabel").textContent = "지급한 원화 (원)";
+    document.getElementById("fYenReceivedLabel").textContent = "받은 엔화 (엔)";
+  } else {
+    document.getElementById("fWonGivenLabel").textContent = "받은 원화 (원)";
+    document.getElementById("fYenReceivedLabel").textContent = "지급한 엔화 (엔)";
+  }
+}
+document.querySelectorAll(".direction-toggle button").forEach(b => {
+  b.addEventListener("click", () => setExchangeDirection(b.getAttribute("data-direction")));
 });
 
 function resetPhotoUI(preservePhoto) {
@@ -862,8 +891,16 @@ function openModal(type, existingTx) {
   document.getElementById("fMemo").value = existingTx ? (existingTx.memo || "") : "";
   document.getElementById("fDate").value = existingTx ? existingTx.date : todayStr();
   document.getElementById("fDateExchange").value = existingTx ? existingTx.date : todayStr();
-  document.getElementById("fWonGiven").value = existingTx ? (existingTx.wonGiven || "") : "";
-  document.getElementById("fYenReceived").value = existingTx ? (existingTx.yenReceived || "") : "";
+  if (existingTx && type === "exchange") {
+    const isYenToWon = (existingTx.wonGiven || 0) < 0;
+    setExchangeDirection(isYenToWon ? "yen-to-won" : "won-to-yen");
+    document.getElementById("fWonGiven").value = Math.abs(existingTx.wonGiven || 0) || "";
+    document.getElementById("fYenReceived").value = Math.abs(existingTx.yenReceived || 0) || "";
+  } else {
+    setExchangeDirection("won-to-yen");
+    document.getElementById("fWonGiven").value = "";
+    document.getElementById("fYenReceived").value = "";
+  }
 
   const titleMap = { income: "후원금 입력", exchange: "환전 입력", expense: "지출 입력" };
   const editTitleMap = { income: "후원금 수정", exchange: "환전 수정", expense: "지출 수정" };
@@ -984,12 +1021,21 @@ document.getElementById("txForm").addEventListener("submit", (e) => {
   const isEditing = !!editingTxId;
 
   if (currentForm === "exchange") {
-    const won = Number(document.getElementById("fWonGiven").value);
-    const yen = Number(document.getElementById("fYenReceived").value);
-    if (!won || won <= 0 || !yen || yen <= 0) {
-      alert("지급한 원화와 받은 엔화를 모두 입력해주세요.");
+    const wonAbs = Number(document.getElementById("fWonGiven").value);
+    const yenAbs = Number(document.getElementById("fYenReceived").value);
+    if (!wonAbs || wonAbs <= 0 || !yenAbs || yenAbs <= 0) {
+      const fieldNames = currentExchangeDirection === "won-to-yen"
+        ? "지급한 원화와 받은 엔화를"
+        : "받은 원화와 지급한 엔화를";
+      alert(`${fieldNames} 모두 입력해주세요.`);
       return;
     }
+    // Stored sign convention: won-to-yen is positive (won decreases, yen
+    // increases); yen-to-won flips both signs so the existing balance
+    // formulas (which assume won-to-yen) net out correctly either way.
+    const sign = currentExchangeDirection === "won-to-yen" ? 1 : -1;
+    const won = sign * wonAbs;
+    const yen = sign * yenAbs;
     const date = document.getElementById("fDateExchange").value || todayStr();
     const memo = document.getElementById("fMemo").value.trim();
     const photoId = currentPhoto;
@@ -1102,10 +1148,15 @@ async function buildExcelWorkbook({ teamName, churchName, accountantName, yenUni
 
   for (const t of visible) {
     if (t.type === "income") {
-      wonRows.push({ date: t.date, name: t.name || "후원자 미입력", receiptNo: "", income: t.amount, expense: "", note: t.method || "" });
+      wonRows.push({ date: t.date, name: t.name || "후원자 미입력", receiptNo: "", income: t.amount, expense: "", note: t.memo || "" });
     } else if (t.type === "exchange") {
-      wonRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: t.wonGiven, note: t.memo || "환전 지급액" });
-      yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: t.yenReceived, expense: "", note: t.memo || "환전 수령액" });
+      if (t.wonGiven >= 0) {
+        wonRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: t.wonGiven, note: t.memo || "환전 지급액" });
+        yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: t.yenReceived, expense: "", note: t.memo || "환전 수령액" });
+      } else {
+        wonRows.push({ date: t.date, name: "환전", receiptNo: "", income: Math.abs(t.wonGiven), expense: "", note: t.memo || "환전 수령액" });
+        yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: Math.abs(t.yenReceived), note: t.memo || "환전 지급액" });
+      }
     } else if (t.type === "expense" && t.country === "KR") {
       wonSeq++;
       wonRows.push({ date: t.date, name: t.category || "분류 미입력", receiptNo: `1-${wonSeq}`, income: "", expense: t.amount, note: t.memo || "" });
