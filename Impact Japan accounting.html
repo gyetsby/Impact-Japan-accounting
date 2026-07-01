@@ -362,6 +362,7 @@
   #importFile { display: none; }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/heic2any/0.0.1/index.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
 <script type="text/plain" id="xlsx-lib-src">
 
 /* xlsx-js-style 1.2.0-beta @ 2022-04-05T01:40:40.843Z */
@@ -415,11 +416,13 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <button data-f="income">입금</button>
       <button data-f="exchange">환전</button>
       <button data-f="expense">지출</button>
+      <button data-f="receipt">🧾 영수증</button>
       <button id="dateFilterToggle" class="date-filter-btn">📅 날짜로 보기</button>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="export-btn" id="exportExcelBtn">📊 엑셀로 내보내기</button>
       <button class="export-btn" id="exportBtn">🔄 다른 기기와 합치기용 백업</button>
+      <button class="export-btn" id="exportZipBtn" style="display:none;">📦 영수증 ZIP 저장</button>
     </div>
   </div>
 
@@ -816,12 +819,20 @@ function render() {
   }
 
   let list = [...visible].sort((a,b)=> a.date !== b.date ? b.date.localeCompare(a.date) : b.createdAt - a.createdAt);
-  if (currentFilter !== "all") list = list.filter(t => t.type === currentFilter);
+  const isReceiptTab = currentFilter === "receipt";
+  if (isReceiptTab) {
+    list = list.filter(t => t.photoId && (t.type === "expense" || t.type === "exchange"));
+  } else if (currentFilter !== "all") {
+    list = list.filter(t => t.type === currentFilter);
+  }
   if (currentDateFilter) list = list.filter(t => t.date === currentDateFilter);
+
+  // ZIP 버튼은 영수증 탭일 때만 표시
+  document.getElementById("exportZipBtn").style.display = isReceiptTab ? "" : "none";
 
   const ledger = document.getElementById("ledger");
   if (list.length === 0) {
-    const msgMap = { all: "아직 기록된 내역이 없어요.", income: "입금 내역이 없어요.", exchange: "환전 내역이 없어요.", expense: "지출 내역이 없어요." };
+    const msgMap = { all: "아직 기록된 내역이 없어요.", income: "입금 내역이 없어요.", exchange: "환전 내역이 없어요.", expense: "지출 내역이 없어요.", receipt: "첨부된 영수증 사진이 없어요." };
     const emptyMsg = currentDateFilter
       ? `${formatDateHeader(currentDateFilter)}에는 ${currentFilter === "all" ? "기록된 내역이" : msgMap[currentFilter].replace(" 내역이 없어요.", " 내역이")} 없어요.`
       : msgMap[currentFilter];
@@ -1370,17 +1381,19 @@ async function buildExcelWorkbook({ teamName, churchName, accountantName, yenUni
 
   const wonRows = [];
   const yenRows = [];
-  let wonSeq = 0, yenSeq = 0;
+  let wonSeq = 0, yenSeq = 0, exSeq = 0;
 
   for (const t of visible) {
     if (t.type === "income") {
       wonRows.push({ date: t.date, name: t.name || "후원자 미입력", receiptNo: "", income: t.amount, expense: "", note: t.memo || "" });
     } else if (t.type === "exchange") {
       if (t.wonGiven >= 0) {
-        wonRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: t.wonGiven, note: t.memo || "환전 지급액" });
+        exSeq++;
+        wonRows.push({ date: t.date, name: "환전", receiptNo: `3-${exSeq}`, income: "", expense: t.wonGiven, note: t.memo || "환전 지급액" });
         yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: t.yenReceived, expense: "", note: t.memo || "환전 수령액" });
       } else {
-        wonRows.push({ date: t.date, name: "환전", receiptNo: "", income: Math.abs(t.wonGiven), expense: "", note: t.memo || "환전 수령액" });
+        exSeq++;
+        wonRows.push({ date: t.date, name: "환전", receiptNo: `3-${exSeq}`, income: Math.abs(t.wonGiven), expense: "", note: t.memo || "환전 수령액" });
         yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: Math.abs(t.yenReceived), note: t.memo || "환전 지급액" });
       }
     } else if (t.type === "expense" && t.country === "KR") {
@@ -1649,6 +1662,72 @@ async function exportData() {
   exportBtn.textContent = originalText;
 }
 document.getElementById("exportBtn").addEventListener("click", exportData);
+
+document.getElementById("exportZipBtn").addEventListener("click", async () => {
+  if (typeof JSZip === "undefined") {
+    alert("JSZip 라이브러리를 불러오는 중이에요. 잠시 후 다시 눌러주세요.");
+    return;
+  }
+
+  const visible = visibleTx();
+  // 엑셀과 동일한 날짜 오름차순 정렬 + 순서로 증빙번호 계산
+  const sorted = [...visible].sort((a,b) => a.date !== b.date ? a.date.localeCompare(b.date) : a.createdAt - b.createdAt);
+
+  // 증빙번호 매핑 먼저 계산 (엑셀 내보내기와 동일한 로직)
+  let wonSeq = 0, yenSeq = 0, exSeq = 0;
+  const receiptEntries = []; // { folder, filename, photoId }
+
+  for (const t of sorted) {
+    if (t.type === "exchange" && t.photoId) {
+      exSeq++;
+      receiptEntries.push({ folder: "3_환전", filename: `3-${exSeq}_환전_${t.date}.jpg`, photoId: t.photoId });
+    } else if (t.type === "expense" && t.country === "KR" && t.photoId) {
+      wonSeq++;
+      const name = (t.category || "지출").replace(/[/\\?%*:|"<>]/g, "-");
+      receiptEntries.push({ folder: "1_한국지출", filename: `1-${wonSeq}_${name}_${t.date}.jpg`, photoId: t.photoId });
+    } else if (t.type === "expense" && t.country === "JP" && t.photoId) {
+      yenSeq++;
+      const name = (t.category || "지출").replace(/[/\\?%*:|"<>]/g, "-");
+      receiptEntries.push({ folder: "2_일본지출", filename: `2-${yenSeq}_${name}_${t.date}.jpg`, photoId: t.photoId });
+    }
+  }
+
+  if (receiptEntries.length === 0) {
+    alert("첨부된 영수증 사진이 없어요.");
+    return;
+  }
+
+  const btn = document.getElementById("exportZipBtn");
+  btn.disabled = true;
+  btn.textContent = "⏳ 준비 중...";
+
+  try {
+    const zip = new JSZip();
+    for (const entry of receiptEntries) {
+      const dataUrl = await getPhotoCached(entry.photoId);
+      if (!dataUrl) continue;
+      // dataUrl → base64
+      const base64 = dataUrl.split(",")[1];
+      const mimeMatch = dataUrl.match(/data:([^;]+);/);
+      const ext = mimeMatch && mimeMatch[1].includes("png") ? "png" : "jpg";
+      const fname = entry.filename.replace(/\.jpg$/, `.${ext}`);
+      zip.folder(entry.folder).file(fname, base64, { base64: true });
+    }
+
+    const blob = await zip.generateAsync({ type: "blob" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `영수증_IMPACT_JAPAN.zip`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+  } catch (e) {
+    alert("ZIP 파일 생성 중 오류가 발생했어요: " + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "📦 영수증 ZIP 저장";
+  }
+});
 
 async function mergeImportedData(jsonText) {
   let payload;
