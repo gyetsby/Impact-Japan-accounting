@@ -127,6 +127,105 @@
   }
   .filters button.active { border-color: var(--ink); background: var(--ink); color: var(--paper); }
 
+  .date-filter-btn {
+    padding: 6px 14px;
+    border-radius: 999px;
+    border: 1px dashed var(--paper-line);
+    background: transparent;
+    color: #6b6256;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+  }
+  .date-filter-btn.active { border-style: solid; border-color: var(--ink); background: var(--ink); color: var(--paper); }
+
+  .date-chip-panel {
+    padding: 12px 18px;
+    background: #faf9f6;
+    border-bottom: 1px solid var(--paper-line);
+  }
+  .cal-nav {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .cal-nav button {
+    background: transparent;
+    border: none;
+    font-size: 18px;
+    cursor: pointer;
+    color: var(--ink);
+    padding: 4px 10px;
+    border-radius: 8px;
+  }
+  .cal-nav button:active { background: var(--paper-line); }
+  .cal-title { font-size: 15px; font-weight: 700; color: var(--ink); }
+  .cal-grid {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 2px;
+    text-align: center;
+  }
+  .cal-weekday {
+    font-size: 11px;
+    font-weight: 600;
+    color: #a39c8e;
+    padding: 4px 0;
+  }
+  .cal-day {
+    position: relative;
+    padding: 6px 2px 10px;
+    border-radius: 8px;
+    font-size: 14px;
+    color: #6b6256;
+    cursor: default;
+  }
+  .cal-day.has-tx {
+    cursor: pointer;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .cal-day.has-tx:active { background: var(--paper-line); }
+  .cal-day.active {
+    background: var(--ink);
+    color: var(--paper);
+  }
+  .cal-day.today { color: var(--exchange); font-weight: 700; }
+  .cal-day.active.today { color: var(--paper); }
+  .cal-dot {
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--exchange);
+  }
+  .cal-day.active .cal-dot { background: var(--paper); }
+
+  .active-date-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    background: #eef0ea;
+    border-bottom: 1px solid var(--paper-line);
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--ink);
+  }
+  .active-date-banner button {
+    border: none;
+    background: transparent;
+    color: #6b6256;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
   .export-btn {
     display: flex;
     align-items: center;
@@ -152,6 +251,14 @@
     text-align: center;
     color: #a39c8e;
     font-size: 14px;
+  }
+  .date-group-header {
+    padding: 14px 18px 6px;
+    font-size: 13px;
+    font-weight: 700;
+    color: #8a8275;
+    background: #faf9f6;
+    border-bottom: 1px solid var(--paper-line);
   }
   .row {
     display: flex;
@@ -308,11 +415,19 @@ var XLSX={};function make_xlsx_lib(a){a.version="0.18.5",a.style_version="1.2.0"
       <button data-f="income">입금</button>
       <button data-f="exchange">환전</button>
       <button data-f="expense">지출</button>
+      <button id="dateFilterToggle" class="date-filter-btn">📅 날짜로 보기</button>
     </div>
     <div style="display:flex; gap:8px; flex-wrap:wrap;">
       <button class="export-btn" id="exportExcelBtn">📊 엑셀로 내보내기</button>
       <button class="export-btn" id="exportBtn">🔄 다른 기기와 합치기용 백업</button>
     </div>
+  </div>
+
+  <div id="dateChipPanel" class="date-chip-panel" style="display:none;"></div>
+
+  <div id="activeDateBanner" class="active-date-banner" style="display:none;">
+    <span id="activeDateLabel"></span>
+    <button id="clearDateFilter">전체 날짜 보기 ✕</button>
   </div>
 
   <div class="ledger" id="ledger"></div>
@@ -464,6 +579,7 @@ const STORE_NAME = "photos";
 let transactions = [];
 let currentForm = null; // 'income' | 'exchange' | 'expense'
 let currentFilter = "all";
+let currentDateFilter = null; // null = all dates, otherwise "YYYY-MM-DD"
 let currentCountry = "KR";
 let currentPhoto = null; // photoId of the photo staged for the open form, or null
 let editingTxId = null; // id of the transaction being edited, or null when adding new
@@ -581,6 +697,15 @@ function todayStr() {
 function formatAmount(n, currency) {
   return Math.round(Number(n) || 0).toLocaleString("ko-KR") + currency;
 }
+function formatDateHeader(dateStr) {
+  // dateStr is "YYYY-MM-DD". Parse manually to avoid timezone shifts.
+  const [y, m, d] = dateStr.split("-").map(Number);
+  const date = new Date(y, m - 1, d);
+  const weekday = ["일","월","화","수","목","금","토"][date.getDay()];
+  const todayStr_ = todayStr();
+  const label = `${m}월 ${d}일 (${weekday})`;
+  return dateStr === todayStr_ ? `${label} · 오늘` : label;
+}
 function escapeHtml(s) {
   return (s || "").replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
@@ -692,11 +817,15 @@ function render() {
 
   let list = [...visible].sort((a,b)=> a.date !== b.date ? b.date.localeCompare(a.date) : b.createdAt - a.createdAt);
   if (currentFilter !== "all") list = list.filter(t => t.type === currentFilter);
+  if (currentDateFilter) list = list.filter(t => t.date === currentDateFilter);
 
   const ledger = document.getElementById("ledger");
   if (list.length === 0) {
     const msgMap = { all: "아직 기록된 내역이 없어요.", income: "입금 내역이 없어요.", exchange: "환전 내역이 없어요.", expense: "지출 내역이 없어요." };
-    ledger.innerHTML = `<div class="empty">${msgMap[currentFilter]}</div>`;
+    const emptyMsg = currentDateFilter
+      ? `${formatDateHeader(currentDateFilter)}에는 ${currentFilter === "all" ? "기록된 내역이" : msgMap[currentFilter].replace(" 내역이 없어요.", " 내역이")} 없어요.`
+      : msgMap[currentFilter];
+    ledger.innerHTML = `<div class="empty">${emptyMsg}</div>`;
     document.getElementById("exportBtn").disabled = visible.length === 0;
     return;
   }
@@ -1111,12 +1240,109 @@ document.getElementById("modalDeleteBtn").addEventListener("click", async () => 
 });
 
 document.getElementById("filters").addEventListener("click", (e) => {
-  const btn = e.target.closest("button");
+  const btn = e.target.closest("button[data-f]");
   if (!btn) return;
   currentFilter = btn.getAttribute("data-f");
-  document.querySelectorAll("#filters button").forEach(b => b.classList.toggle("active", b === btn));
+  document.querySelectorAll("#filters button[data-f]").forEach(b => b.classList.toggle("active", b === btn));
   render();
 });
+
+let calYear = new Date().getFullYear();
+let calMonth = new Date().getMonth(); // 0-indexed
+
+function renderCalendar() {
+  const panel = document.getElementById("dateChipPanel");
+  const visible = visibleTx();
+  const txDates = new Set(visible.map(t => t.date));
+  const today = todayStr();
+
+  const firstDay = new Date(calYear, calMonth, 1).getDay(); // 0=Sun
+  const daysInMonth = new Date(calYear, calMonth + 1, 0).getDate();
+
+  const weekdays = ["일","월","화","수","목","금","토"];
+  let html = `
+    <div class="cal-nav">
+      <button id="calPrev">‹</button>
+      <span class="cal-title">${calYear}년 ${calMonth + 1}월</span>
+      <button id="calNext">›</button>
+    </div>
+    <div class="cal-grid">
+      ${weekdays.map(w => `<div class="cal-weekday">${w}</div>`).join("")}
+      ${Array(firstDay).fill(`<div></div>`).join("")}
+  `;
+
+  for (let d = 1; d <= daysInMonth; d++) {
+    const dateStr = `${calYear}-${String(calMonth + 1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+    const hasTx = txDates.has(dateStr);
+    const isActive = dateStr === currentDateFilter;
+    const isToday = dateStr === today;
+    const cls = ["cal-day", hasTx ? "has-tx" : "", isActive ? "active" : "", isToday ? "today" : ""].filter(Boolean).join(" ");
+    html += `<div class="${cls}" ${hasTx ? `data-date="${dateStr}"` : ""}>${d}${hasTx ? `<span class="cal-dot"></span>` : ""}</div>`;
+  }
+
+  html += `</div>`;
+  panel.innerHTML = html;
+
+  document.getElementById("calPrev").addEventListener("click", () => {
+    calMonth--;
+    if (calMonth < 0) { calMonth = 11; calYear--; }
+    renderCalendar();
+  });
+  document.getElementById("calNext").addEventListener("click", () => {
+    calMonth++;
+    if (calMonth > 11) { calMonth = 0; calYear++; }
+    renderCalendar();
+  });
+}
+
+document.getElementById("dateFilterToggle").addEventListener("click", () => {
+  const panel = document.getElementById("dateChipPanel");
+  const isOpen = panel.style.display !== "none";
+  if (isOpen) {
+    panel.style.display = "none";
+    document.getElementById("dateFilterToggle").classList.remove("active");
+  } else {
+    // 선택된 날짜가 있으면 그 달로, 없으면 현재 달로
+    if (currentDateFilter) {
+      const [y, m] = currentDateFilter.split("-").map(Number);
+      calYear = y; calMonth = m - 1;
+    } else {
+      calYear = new Date().getFullYear();
+      calMonth = new Date().getMonth();
+    }
+    renderCalendar();
+    panel.style.display = "block";
+    document.getElementById("dateFilterToggle").classList.add("active");
+  }
+});
+
+document.getElementById("dateChipPanel").addEventListener("click", (e) => {
+  const day = e.target.closest(".cal-day.has-tx");
+  if (!day || e.target.closest("#calPrev") || e.target.closest("#calNext")) return;
+  const d = day.getAttribute("data-date");
+  if (!d) return;
+  currentDateFilter = (d === currentDateFilter) ? null : d;
+  document.getElementById("dateChipPanel").style.display = "none";
+  document.getElementById("dateFilterToggle").classList.remove("active");
+  updateActiveDateBanner();
+  render();
+});
+
+document.getElementById("clearDateFilter").addEventListener("click", () => {
+  currentDateFilter = null;
+  updateActiveDateBanner();
+  render();
+});
+
+function updateActiveDateBanner() {
+  const banner = document.getElementById("activeDateBanner");
+  if (currentDateFilter) {
+    document.getElementById("activeDateLabel").textContent = `📅 ${formatDateHeader(currentDateFilter)} 내역만 보는 중`;
+    banner.style.display = "flex";
+  } else {
+    banner.style.display = "none";
+  }
+}
 
 // Lazily loads the bundled XLSX library only when Excel export is actually
 // requested. The library source sits in a <script type="text/plain"> tag so
@@ -1158,11 +1384,13 @@ async function buildExcelWorkbook({ teamName, churchName, accountantName, yenUni
         yenRows.push({ date: t.date, name: "환전", receiptNo: "", income: "", expense: Math.abs(t.yenReceived), note: t.memo || "환전 지급액" });
       }
     } else if (t.type === "expense" && t.country === "KR") {
-      wonSeq++;
-      wonRows.push({ date: t.date, name: t.category || "분류 미입력", receiptNo: `1-${wonSeq}`, income: "", expense: t.amount, note: t.memo || "" });
+      const hasReceipt = !!t.photoId;
+      if (hasReceipt) wonSeq++;
+      wonRows.push({ date: t.date, name: t.category || "분류 미입력", receiptNo: hasReceipt ? `1-${wonSeq}` : "영수증 없음", income: "", expense: t.amount, note: t.memo || "" });
     } else if (t.type === "expense" && t.country === "JP") {
-      yenSeq++;
-      yenRows.push({ date: t.date, name: t.category || "분류 미입력", receiptNo: `2-${yenSeq}`, income: "", expense: t.amount, note: t.memo || "" });
+      const hasReceipt = !!t.photoId;
+      if (hasReceipt) yenSeq++;
+      yenRows.push({ date: t.date, name: t.category || "분류 미입력", receiptNo: hasReceipt ? `2-${yenSeq}` : "영수증 없음", income: "", expense: t.amount, note: t.memo || "" });
     }
   }
 
